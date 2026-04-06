@@ -1,21 +1,36 @@
 #!/usr/bin/env bash
-# Fix: GenesysLogic USB3.2 Hub (05e3:0625) disconnect loop on CachyOS
+# Fix: GenesysLogic GL3590 hub LPM disconnect loop (UGREEN Revodok CM818, CachyOS)
 #
-# Root cause: XHCI hardware enables USB3 LPM U1/U2 link-state transitions.
-#   The hub firmware cannot handle them → XHCI slot error → hub crashes
-#   → kernel disconnects hub → hub reconnects → repeats every ~5 s.
-#   Note: USB_QUIRK_NO_LPM only disables the *power-management* U1/U2 transitions.
-#   The hub still runs at full USB 3.2 / 10 Gbps speed.
+# Device: UGREEN Revodok CM818 (P/N 45363), 6-in-1 USB-C hub
+# Product: https://www.amazon.com/dp/B0D1XLNWP2
+# Chipset: GenesysLogic GL3590 USB ID: 05e3:0625
+# Companion USB2 hub: 05e3:0610 IC_359020, firmware 64.0 (bcdDevice=64.00)
+# fwupd: device detected, no LVFS firmware available for this config
+# OS: CachyOS (Arch-based), Limine bootloader, BTRFS subvol=/@
 #
-# Fix layers:
-#   1. Runtime  – write quirk to /sys/module/usbcore/parameters/quirks (no reboot)
-#                 then force hub re-enumeration so the quirk is applied immediately
-#   2. Udev     – set power/control=on on every add event (belt-and-suspenders)
-#   3. modprobe.d – quirk persists across reboots via initramfs
-#   4. Cmdline  – quirk baked into Limine kernel cmdline (belt-and-suspenders)
+# Symptom: KDED repeatedly shows 'GenesysLogic USB3.2 Hub connected/disconnected'
+# every ~5 seconds. Devices still usable but loop causes plasma/kded spam.
+# dmesg: usb 2-4: Failed to suspend device, error -19
+#        xhci_hcd: WARN Set TR Deq Ptr cmd failed (slot/ep state error)
+#        hub 2-4:1.0: config failed, cant get hub status (err -5)
 #
-# Encoding note: usbcore.quirks uses LETTER encoding, not hex.
-#   Bit 10 (USB_QUIRK_NO_LPM) = letter 'k'  (a=bit0, b=bit1, ..., k=bit10)
+# Root cause: XHCI hardware enables USB3 LPM U1 state transitions automatically at
+# device enumeration. The GL3590 firmware cannot handle U1 link-state entry ->
+# XHCI slot error (ENODEV/-19) -> kernel forces USB disconnect -> hub re-enumerates -> repeats.
+# USB 3.2 Gen2 / 10 Gbps data speed is completely unaffected by fix.
+#
+# Fix (3 layers, all scoped to 05e3:0625 only):
+# 1. Runtime (immediate, no reboot): echo '05e3:0625:k' > /sys/module/usbcore/parameters/quirks
+#    echo 1 > /sys/bus/usb/devices/2-4/remove (force re-enumeration)
+#    Verified: cat /sys/bus/usb/devices/2-4/quirks == 0x400, usb3_hardware_lpm_u1 file gone (LPM disabled)
+# 2. Permanent (reboot persistent): /etc/modprobe.d/usb-genesyslogic-nolpm.conf + limine-mkinitcpio
+# 3. Udev (belt-and-suspenders): /etc/udev/rules.d/99-usb-genesyslogic-nolpm.rules
+#
+# CRITICAL - encoding bug: usbcore.quirks uses LETTER encoding (k=bit10=USB_QUIRK_NO_LPM)
+# Writing hex '0x0400' silently fails (device quirks stays 0x0). Only '05e3:0625:k' works.
+#
+# Firmware note: fwupd detects hub as updatable but no LVFS package for BONDING_78 config.
+# A vendor firmware update could fix this permanently.
 #
 # Usage: sudo bash fix-usb-hub-lpm.sh
 
