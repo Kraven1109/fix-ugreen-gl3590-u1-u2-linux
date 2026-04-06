@@ -8,8 +8,8 @@ VID="05e3"
 PID="0625"
 PASS=0; FAIL=0
 
-ok()   { echo "  [PASS] $*"; ((PASS++)); }
-fail() { echo "  [FAIL] $*"; ((FAIL++)); }
+ok()   { echo "  [PASS] $*"; PASS=$((PASS+1)); }
+fail() { echo "  [FAIL] $*"; FAIL=$((FAIL+1)); }
 warn() { echo "  [WARN] $*"; }
 
 echo "=== 1. Runtime quirk ==="
