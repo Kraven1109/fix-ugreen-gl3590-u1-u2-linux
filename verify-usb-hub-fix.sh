@@ -10,8 +10,9 @@
 #   2. Device   — NO_LPM bit (0x400) set, power/control=on, LPM file absent
 #   3. Udev     — 99-usb-genesyslogic-nolpm.rules exists and is well-formed
 #   4. Persist  — modprobe.d file exists with correct letter encoding
-#   5. Cmdline  — /etc/default/limine is CLEAN (no legacy cmdline quirk)
-#   6. Stability— no hub errors in dmesg in the last 2 minutes
+#   5. Persist  — kernel cmdline has the quirk (/etc/kernel/cmdline + Limine)
+#   6. Persist  — systemd service exists and is enabled
+#   7. Stability— no hub errors in dmesg in the last 2 minutes
 #
 # Usage: sudo bash verify-usb-hub-fix.sh
 
@@ -145,23 +146,61 @@ else
     fail "${MODPROBE_FILE} not found — run fix script to create"
 fi
 
-# ── 5. Boot cmdline clean (Limine) ───────────────────────────────────────────
+# ── 5. Kernel cmdline persistence ────────────────────────────────────────────
+# The quirk MUST be in the kernel cmdline so it is applied on every boot
+# regardless of whether usbcore is a built-in or loadable module.
 echo ""
-echo "── 5. Boot cmdline (Limine) — should be CLEAN"
-LIMINE_DEFAULT="/etc/default/limine"
-if [[ ! -f "${LIMINE_DEFAULT}" ]]; then
-    warn "${LIMINE_DEFAULT} not found — skip (non-Limine system?)"
-elif grep -q "usbcore\.quirks=${VID}:${PID}:k" "${LIMINE_DEFAULT}"; then
-    warn "Legacy usbcore.quirks still in ${LIMINE_DEFAULT} — run fix script to clean up"
-    info "Harmless, but modprobe.d is the correct permanent mechanism."
-    grep "usbcore.quirks" "${LIMINE_DEFAULT}" | sed 's/^/         /'
+echo "── 5. Kernel cmdline persistence"
+
+KERNEL_CMDLINE_FILE="/etc/kernel/cmdline"
+if [[ -f "${KERNEL_CMDLINE_FILE}" ]]; then
+    if grep -q "usbcore\.quirks=${VID}:${PID}:k" "${KERNEL_CMDLINE_FILE}"; then
+        ok "${KERNEL_CMDLINE_FILE} contains usbcore.quirks=${VID}:${PID}:k"
+        info "$(cat "${KERNEL_CMDLINE_FILE}")"
+    else
+        fail "usbcore.quirks=${VID}:${PID}:k NOT found in ${KERNEL_CMDLINE_FILE} — run fix script"
+        info "Current content: $(cat "${KERNEL_CMDLINE_FILE}")"
+    fi
 else
-    ok "Cmdline is clean — modprobe.d is sole permanent source (correct)"
+    fail "${KERNEL_CMDLINE_FILE} does not exist — run fix script to create it"
 fi
 
-# ── 6. Recent dmesg stability ─────────────────────────────────────────────────
+LIMINE_DEFAULT="/etc/default/limine"
+if [[ ! -f "${LIMINE_DEFAULT}" ]]; then
+    warn "${LIMINE_DEFAULT} not found — skip (non-Limine system or not yet configured)"
+elif grep -q "usbcore\.quirks=${VID}:${PID}:k" "${LIMINE_DEFAULT}"; then
+    ok "KERNEL_CMDLINE in ${LIMINE_DEFAULT} contains the quirk"
+    grep "usbcore.quirks" "${LIMINE_DEFAULT}" | sed 's/^/         /'
+else
+    # /etc/kernel/cmdline (checked above) is the primary persistence mechanism.
+    # /etc/default/limine is belt-and-suspenders; missing it is not fatal.
+    warn "usbcore.quirks not in ${LIMINE_DEFAULT} (non-critical — /etc/kernel/cmdline is the primary source)"
+fi
+
+# ── 6. Systemd service ───────────────────────────────────────────────────────
 echo ""
-echo "── 6. Recent kernel errors (last 2 minutes)"
+echo "── 6. Systemd service (boot-time fallback)"
+SERVICE="usb-genesyslogic-lpm-fix.service"
+SERVICE_FILE="/etc/systemd/system/${SERVICE}"
+if [[ -f "${SERVICE_FILE}" ]]; then
+    ok "${SERVICE_FILE} exists"
+    ENABLED=$(systemctl is-enabled "${SERVICE}" 2>/dev/null || echo "unknown")
+    if [[ "${ENABLED}" == "enabled" ]]; then
+        ok "Service is enabled (runs on every boot)"
+    else
+        fail "Service exists but is NOT enabled (status: ${ENABLED}) — run: systemctl enable ${SERVICE}"
+    fi
+    ACTIVE=$(systemctl is-active "${SERVICE}" 2>/dev/null || echo "inactive")
+    [[ "${ACTIVE}" == "active" ]] \
+        && ok "Service is currently active" \
+        || warn "Service current state: ${ACTIVE} (normal if just installed)"
+else
+    fail "${SERVICE_FILE} missing — run fix script to create and enable it"
+fi
+
+# ── 7. Recent dmesg stability ────────────────────────────────────────────────
+echo ""
+echo "── 7. Recent kernel errors (last 2 minutes)"
 if command -v journalctl &>/dev/null; then
     ERR_LINES=$(journalctl -k --since "2 minutes ago" 2>/dev/null \
         | grep -E "05e3|usb.*suspend.*error|hub.*config.*fail|WARN.*TR Deq" || true)
